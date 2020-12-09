@@ -1,49 +1,55 @@
 import discord
 from discord.ext import commands
 import os
+import sqlalchemy as db
+
 
 client = commands.Bot(command_prefix=".")
-token = os.getenv("DISCORD_BOT_TOKEN")
+ENGINE = db.create_engine(os.getenv("DATABASE_URL"))
+connection = ENGINE.connect()
+META_DATA = db.MetaData(bind=connection)
+META_DATA.reflect()
+challenges = META_DATA.tables['Challenges']
 
+
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 USERS = ["T1mbo96#1861", "NPC#0770"]
-FILE = "challenges.csv"
 EVENTCHANNEL = 780013047761600533
 
 
-def get_current_flag():
-    with open(FILE, "r") as doc:
-        lines = doc.readlines()
-        if not lines:
-            return False
-        else:
-            return lines[-1].split(";")[1]
-
-
 def get_current_active():
-    with open(FILE, "r") as doc:
-        lines = doc.readlines()
-        if not lines:
-            return False
-        else:
-            return lines[-1].split(";")[0] == "True"
+    """
+    Access Database and search for challenges.
+    :return: False if no challenge is active, str (flag) else
+    """
+    statement = (
+        db.select([challenges]).
+        where(challenges.c.status)
+    )
+    results = connection.execute(statement).fetchall()
+    if not results:
+        return False
+    else:
+        return results[-1][-2]
 
 
 def add_challenge(flag, challenge):
-    with open(FILE, "r+") as doc:
-        doc.write(f"True;{flag};{challenge}\n")
+    statement = db.select([challenges])
+    id_ = len(connection.execute(statement).fetchall()) + 1
+    statement = db.insert(challenges).values(id=id_, exercise=challenge, flag=flag, status=True)
+    connection.execute(statement)
 
 
 def end_challenge():
     if not get_current_active():
         return False
     else:
-        with open(FILE, "r") as doc:
-            lines = doc.readlines()
-        last = lines[-1].split(";")
-        last[0] = "False"
-        lines[-1] = ";".join(last)
-        with open(FILE, "w") as doc:
-            doc.writelines(lines)
+        statement = (
+            db.update(challenges).
+            where(challenges.c.status).
+            values(status=False)
+        )
+        connection.execute(statement)
         return True
 
 
@@ -60,10 +66,11 @@ async def info(ctx):
     """
     await ctx.send(f"Latenz: {str(round(client.latency, 2))}")
     if str(ctx.author) in USERS:
-        if not get_current_active():
+        flag = get_current_active()
+        if flag is False:
             await ctx.send("Keine aktive Challenge")
         else:
-            await ctx.send(f"Aktive Challenge, Flag: {get_current_flag()}")
+            await ctx.send(f"Aktive Challenge, Flag: {flag}")
 
 
 @client.command(name="startEvent")
@@ -74,13 +81,17 @@ async def startEvent(ctx):
     Usage: .startEvent #example text#ctf{example123}
     """
     header, challenge, flag = ctx.message.content.split("#")
-    await ctx.message.delete()
+
+    channel = ctx.message.channel
+    if not ("Direct Message" in str(channel)):
+        await ctx.message.delete()
+
     if flag == "" or challenge == "":
         await ctx.send("Bitte Flagge und Challenge anhängen: .startEvent Aufgabe ctf{example123}")
     elif str(ctx.author) not in USERS:
         await ctx.send("Du hast nicht die Berechtigung diese Aktion durchzuführen!")
 
-    elif get_current_active():
+    elif get_current_active() is not False:
         await ctx.send("Es läuft bereits eine Challenge! Nutze .endEvent um dieses zu beenden.")
     else:
         add_challenge(flag, challenge.encode())
@@ -114,11 +125,15 @@ async def flag(ctx, flag):
         start = f"@{str(ctx.message.author).split('#')[0]} : "
     else:
         start = ""
-    if flag == get_current_flag() and get_current_active():
+
+    flag_ = get_current_active()
+    if flag_ is False:
+        await ctx.send("Keine aktive Challenge")
+    elif flag == flag_:
         await ctx.send(start + "Richtig! Du hast es geschaft! :)")
     else:
         await ctx.send(start + "Leider falsch! Versuch es einfach erneut :(")
 
 
 if __name__ == '__main__':
-    client.run(token)
+    client.run(TOKEN)
